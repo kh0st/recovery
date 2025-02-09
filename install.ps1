@@ -1,85 +1,138 @@
 <#
 .SYNOPSIS
-    This Script fetches the latest WinUtil (ChrisTitusTech) release
-    and invokes it, appending a custom JSON config file (WinUtilPreset.json).
+    Modified ChrisTitusTech windev-style script to:
+    1. Download + run the latest WinUtil (pre-release preferred).
+    2. Append '-CustomPreset WinUtilPreset.json' if found.
+    3. Install Git via Winget if needed.
+    4. Clone kh0st/wallpapers.git into User's Pictures folder.
 .DESCRIPTION
-    This is a modified version of ChrisTitusTech's "windev.ps1" bootstrap script.
-    It checks for a local 'WinUtilPreset.json' and, if found, passes it to the main script.
-    NOTE: Adjust the parameter name (-CustomPreset) to match your WinUtil version's requirement.
+    This script is designed for a one-click Windows setup automation:
+      - If WinUtilPreset.json is in the same folder, pass it to WinUtil.
+      - If Git isn't installed, install it silently with Winget.
+      - Clone the wallpapers repo to %USERPROFILE%\Pictures\wallpapers.
 .EXAMPLE
-    irm https://Your-Repo-URL/windev.ps1 | iex
-    OR
-    Run in Admin Powershell >  ./windev.ps1
+    1) Right-click > "Run with PowerShell" (as Admin)
+    2) Or from elevated PowerShell: ./windev.ps1
 #>
 
-# -- 1. Function: Get-LatestRelease
+# --- 1. Fetch the latest release info from GitHub ---
+
 function Get-LatestRelease {
     try {
-        $releases = Invoke-RestMethod -Uri 'https://api.github.com/repos/ChrisTitusTech/winutil/releases'
-        # We prefer the latest Pre-Release if present
-        $latestRelease = $releases | Where-Object { $_.prerelease -eq $true } | Select-Object -First 1
-        return $latestRelease.tag_name
+        # Get all releases from the GitHub API
+        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/ChrisTitusTech/winutil/releases"
+        
+        # Attempt to get the latest pre-release if available
+        $latestPre = $releases | Where-Object { $_.prerelease -eq $true } | Select-Object -First 1
+        if ($latestPre) { return $latestPre.tag_name }
+
+        # If no pre-release found, fallback to the first stable release
+        $latestStable = $releases | Where-Object { $_.prerelease -eq $false } | Select-Object -First 1
+        return $latestStable.tag_name
     }
     catch {
-        Write-Host "Error fetching release data: $_" -ForegroundColor Red
+        Write-Host "Error fetching release data: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
 }
 
-# -- 2. Function: RedirectToLatestPreRelease
-function RedirectToLatestPreRelease {
-    $latestRelease = Get-LatestRelease
+# --- 2. Download + run WinUtil script, optionally appending custom preset ---
 
-    if ($latestRelease) {
-        $url = "https://github.com/ChrisTitusTech/winutil/releases/download/$latestRelease/winutil.ps1"
-        Write-Host "Using latest pre-release: $latestRelease"
-    }
-    else {
-        Write-Host 'No pre-release version found. Using latest Full Release...' -ForegroundColor Yellow
+function Run-WinUtilWithPreset {
+    $release = Get-LatestRelease
+    if (-not $release) {
+        Write-Host "Couldn't determine latest release. Using fallback (latest stable)." -ForegroundColor Yellow
+        $release = "latest/download"
         $url = "https://github.com/ChrisTitusTech/winutil/releases/latest/download/winutil.ps1"
+    } else {
+        Write-Host "Found WinUtil release tag: $release"
+        $url = "https://github.com/ChrisTitusTech/winutil/releases/download/$release/winutil.ps1"
     }
 
-    # -- 2a. Download the actual WinUtil script into a variable --
     try {
-        $script = Invoke-RestMethod $url
+        # Download the WinUtil script content into a variable
+        $script = Invoke-RestMethod -Uri $url
     }
     catch {
-        Write-Host "Error downloading WinUtil script from $url : $_" -ForegroundColor Red
+        Write-Host "Error downloading winutil.ps1 from $url : $($_.Exception.Message)" -ForegroundColor Red
         return
     }
 
-    # -- 2b. Check if we have a local WinUtilPreset.json to pass --
-    #    We'll assume it's in the same directory as this script.
+    # Check if the local JSON config file exists in the same dir as this script
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    $jsonPath  = Join-Path $scriptDir "WinUtilPreset.json"
+    $presetPath = Join-Path $scriptDir "WinUtilPreset.json"
 
-    if (Test-Path $jsonPath) {
-        Write-Host "Found WinUtilPreset.json. Passing -CustomPreset parameter..."
-        # Here we append the parameter to the script text
-        $script += " -CustomPreset `"$jsonPath`""
-        # ^ If the parameter name is different in your WinUtil version, adjust it here!
-    }
-    else {
-        Write-Host "No WinUtilPreset.json found. Proceeding without custom presets." -ForegroundColor Yellow
+    if (Test-Path $presetPath) {
+        Write-Host "Found WinUtilPreset.json. Using -CustomPreset $presetPath..."
+        # Append the argument for the config file
+        $script += " -CustomPreset `"$presetPath`""
+        # ^ Adjust parameter name if your WinUtil version differs
+    } else {
+        Write-Host "No WinUtilPreset.json found. Running WinUtil without a custom preset." -ForegroundColor Yellow
     }
 
-    # -- 2c. Elevate if needed --
+    # Check if we are running as Admin
     if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole] "Administrator")) {
 
-        Write-Host "WinUtil needs to run as Administrator. Attempting to relaunch..."
-
+        Write-Host "Re-launching script in an elevated PowerShell..."
         $powershellCmd = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell" }
-        $processCmd    = if (Get-Command wt.exe -ErrorAction SilentlyContinue) { "wt.exe" } else { $powershellCmd }
+        $processCmd = if (Get-Command wt.exe -ErrorAction SilentlyContinue) { "wt.exe" } else { $powershellCmd }
 
-        # Start an elevated process and pass the script as a command string
         Start-Process $processCmd -ArgumentList "$powershellCmd -ExecutionPolicy Bypass -NoProfile -Command $($script)" -Verb RunAs
     }
     else {
-        # Already elevated, just run the script
+        Write-Host "Running WinUtil in the current (already elevated) session..."
         Invoke-Expression $script
     }
 }
 
-# -- 3. Run the function --
-RedirectToLatestPreRelease
+# --- 3. Ensure Git is installed, then clone the wallpapers repo ---
+
+function Install-GitIfNeeded {
+    Write-Host "Checking if 'git' is available..."
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host "'git' not found. Installing via Winget..."
+        # If needed, ensure winget is available (Windows 10+ with App Installer).
+        winget install --id Git.Git -e --accept-package-agreements --accept-source-agreements -h
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Write-Host "Failed to install Git via Winget." -ForegroundColor Red
+            return
+        }
+    }
+    else {
+        Write-Host "Git is already installed."
+    }
+}
+
+function Clone-WallpapersRepo {
+    # We'll clone to %USERPROFILE%\Pictures\wallpapers
+    $picturesPath = Join-Path $env:USERPROFILE "Pictures"
+    $wallpapersPath = Join-Path $picturesPath "wallpapers"
+
+    # Create the pictures folder if it doesn't exist
+    if (-not (Test-Path $picturesPath)) {
+        Write-Host "Creating user Pictures folder at $picturesPath..."
+        New-Item -Path $picturesPath -ItemType Directory | Out-Null
+    }
+
+    # If the 'wallpapers' folder already exists, we can skip or remove it
+    if (Test-Path $wallpapersPath) {
+        Write-Host "wallpapers folder already exists at $wallpapersPath; skipping clone." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "Cloning kh0st/wallpapers.git into $wallpapersPath..."
+    git clone "https://github.com/kh0st/wallpapers.git" "$wallpapersPath"
+}
+
+# --- 4. Main Execution ---
+
+# Step A: Run WinUtil with optional JSON preset
+Run-WinUtilWithPreset
+
+# Step B: Install Git if needed and clone your wallpapers repo
+Install-GitIfNeeded
+Clone-WallpapersRepo
+
+Write-Host "`nDone! WinUtil script executed and wallpapers cloned (if possible)." -ForegroundColor Green
