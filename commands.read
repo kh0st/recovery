@@ -1,0 +1,2 @@
+iwr -useb "https://raw.githubusercontent.com/kh0st/winrecovery/main/install.ps1" | iex 
+
