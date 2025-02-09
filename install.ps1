@@ -19,8 +19,14 @@
 function Get-LatestRelease {
     try {
         $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/ChrisTitusTech/winutil/releases"
+        # Attempt to get the latest pre-release
         $latestPre = $releases | Where-Object { $_.prerelease -eq $true } | Select-Object -First 1
-        return $latestPre ? $latestPre.tag_name : $releases[0].tag_name
+        if ($latestPre) {
+            return $latestPre.tag_name
+        } else {
+            # Fallback to the first stable release
+            return $releases[0].tag_name
+        }
     }
     catch {
         Write-Host "Error fetching WinUtil release: $_" -ForegroundColor Red
